@@ -147,21 +147,16 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
             switch ( type )
             {
                 case R_AARCH64_RELATIVE:{
-                    //uintptr_t val = *ptr + base;
                     *ptr = base + entry.r_addend;
                     break;
                 }
                 case R_AARCH64_ABS64:{
-                    //if (symbol.st_shndx != SHN_UNDEF) {
-                        //uintptr_t val = *ptr + base + symbol.st_value;
                         *ptr = base + symbol.st_value + entry.r_addend;
-                    //}
                     break;
                 }
                 case R_AARCH64_GLOB_DAT:
                 case R_AARCH64_JUMP_SLOT:{
                     if (symbol.st_shndx != SHN_UNDEF) {
-                        //uintptr_t val = base + symbol.st_value;
                         *ptr = base + symbol.st_value + entry.r_addend;
                     }
                     break;
@@ -169,7 +164,6 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
                 default:
                     // who cares lmao
                     std::cerr << fmt::format("Error unknown relocation type: {}\n", type);
-                    // printf("Error unknown relocation type %x\n", type);
                     break;
             }
 
