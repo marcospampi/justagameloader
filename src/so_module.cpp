@@ -94,6 +94,7 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
 
     std::span<Elf64_Dyn> dynamic{};
     const char *dynstr{nullptr};
+    Elf64_Shdr *dynsym_section;
     std::span<Elf64_Sym> dynsym{};
     std::span<Elf64_Rela> reladyn{};
     std::span<Elf64_Rela> relaplt{};
@@ -101,12 +102,16 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
 
 
 
-    for ( const auto &section: sections ) {
+    for ( auto &section: sections ) {
         const char *name = &section_names[section.sh_name];
-        const auto addr = section.sh_addr;
+        const auto addr = section.sh_offset;
+
         const auto count = section.sh_entsize == 0 
             ? section.sh_size
             : section.sh_size / (section.sh_entsize );
+        if ( section.sh_type == SHT_SYMTAB ) {
+            std::cout << name << std::endl;
+        }
         if ( name == std::string_view(".dynamic") ) {
             dynamic = std::span(reinterpret_cast<Elf64_Dyn*>(&allocation[addr]), count);
         } 
@@ -114,6 +119,7 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
             dynstr = reinterpret_cast<char*>(&allocation[addr]);
         } 
         else if ( name == std::string_view(".dynsym") ) {
+            dynsym_section = &section;
             dynsym = std::span(reinterpret_cast<Elf64_Sym*>(&allocation[addr]), count);
         } 
         else if ( name == std::string_view(".rela.dyn") ) {
@@ -128,7 +134,7 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
     }
 
     
-    SharedLibraryModule::symbol_table symbols;
+    Elf::symbol_table symbols;
 
     const auto base = reinterpret_cast<uintptr_t>(allocation);
     auto relocate_symbols = [&](std::span<Elf64_Rela> &entries) {
@@ -141,27 +147,28 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
             switch ( type )
             {
                 case R_AARCH64_RELATIVE:{
-                    uintptr_t val = *ptr + base;
-                    *ptr = val + entry.r_addend;
+                    //uintptr_t val = *ptr + base;
+                    *ptr = base + entry.r_addend;
                     break;
                 }
                 case R_AARCH64_ABS64:{
-                    if (symbol.st_shndx != SHN_UNDEF) {
-                        uintptr_t val = *ptr + base + symbol.st_value;
-                        *ptr = val + entry.r_addend;
-                    }
+                    //if (symbol.st_shndx != SHN_UNDEF) {
+                        //uintptr_t val = *ptr + base + symbol.st_value;
+                        *ptr = base + symbol.st_value + entry.r_addend;
+                    //}
                     break;
                 }
                 case R_AARCH64_GLOB_DAT:
                 case R_AARCH64_JUMP_SLOT:{
                     if (symbol.st_shndx != SHN_UNDEF) {
-                        uintptr_t val = base + symbol.st_value;
-                        *ptr = val + entry.r_addend;
+                        //uintptr_t val = base + symbol.st_value;
+                        *ptr = base + symbol.st_value + entry.r_addend;
                     }
                     break;
                 }
                 default:
                     // who cares lmao
+                    std::cerr << fmt::format("Error unknown relocation type: {}\n", type);
                     // printf("Error unknown relocation type %x\n", type);
                     break;
             }
@@ -179,11 +186,13 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
     relocate_symbols(reladyn);
     relocate_symbols(relaplt);
 
-
     for ( auto &symbol: dynsym ) {
+
         const std::string name = &dynstr[symbol.st_name];
         uintptr_t ptr = base + symbol.st_value;
-
+        if ( name == "main" ) {
+            std::cout << name << std::endl;
+        }
         if ( name.length() > 0 && !symbols.contains(name) ){
             symbols[name] = {
                 .address = reinterpret_cast<uintptr_t>(ptr),
@@ -192,12 +201,31 @@ auto relocate(u8 *allocation, Elf64_Ehdr &header, std::vector<Elf64_Shdr> &secti
         }
     }
 
-    return symbols;
+    if ( header.e_entry ) {
+        symbols["_start"] = {
+            .address = base + header.e_entry,
+            .is_import = false
+        };
+    }
+    
+    for ( auto &section : sections ) {
+        const char *name = &section_names[section.sh_name];
+        if ( name == std::string_view(".text") && !symbols.contains("main") ) {
+            symbols["main"] = {
+                .address = base + section.sh_offset,
+                .is_import = false
+            };
+
+        }
+    }
+
+
+    return std::make_tuple(symbols, init_array);
 
 
 }
-SharedLibraryModule::~SharedLibraryModule() {}
-SharedLibraryModule::SharedLibraryModule(const std::filesystem::path &library) {
+Elf::~Elf() {}
+Elf::Elf(const std::filesystem::path &library) {
     #define CHECK_FILE() if ( file.bad() ) throw std::runtime_error(fmt::format("Failed to open file: {}", library.c_str()));
 
     std::ifstream file(library);
@@ -222,14 +250,15 @@ SharedLibraryModule::SharedLibraryModule(const std::filesystem::path &library) {
     this->allocation = load_segments(std::span(program_headers, program_headers_count), file);
     auto sections = get_section_headers(header, file);
     auto section_names = get_section_names(header, sections, file);
-    this->symbols = relocate(allocation.get(), header, sections, section_names.get());
-
+    auto [ symbols, init_array ] = relocate(allocation.get(), header, sections, section_names.get());
+    this->symbols = symbols;
+    this->init_array = init_array;
 }
 
-const SharedLibraryModule::symbol_table &SharedLibraryModule::get_symbol_table() const {
+const Elf::symbol_table &Elf::get_symbol_table() const {
     return symbols;
 }
-std::optional<uintptr_t> SharedLibraryModule::get_symbol(const std::string &sym) const {
+std::optional<uintptr_t> Elf::get_symbol(const std::string &sym) const {
     if ( symbols.contains(sym) ) {
         const auto &symbol = symbols.at(sym);
         if ( symbol.is_import ) {
@@ -243,7 +272,7 @@ std::optional<uintptr_t> SharedLibraryModule::get_symbol(const std::string &sym)
         return std::nullopt;
     }
 }
-void SharedLibraryModule::hook_symbol(const std::string &sym, uintptr_t ptr) {
+void Elf::hook_symbol(const std::string &sym, uintptr_t ptr) {
     if ( symbols.contains(sym) ) {
         const auto &symbol = symbols.at(sym);
         if ( symbol.is_import ) {
@@ -254,12 +283,12 @@ void SharedLibraryModule::hook_symbol(const std::string &sym, uintptr_t ptr) {
         }
     }
 }
-void SharedLibraryModule::patch_symbol(uintptr_t addr, uintptr_t with) {
+void Elf::patch_symbol(uintptr_t addr, uintptr_t with) {
     *reinterpret_cast<uintptr_t *>(addr) = with;
 }
 /// SAUCE: https://github.com/fgsfdsfgs/max_nx/blob/master/source/so_util.c#L68
 /// thanks to fgsfdsfgs ( didn't copy paste ze name )
-void SharedLibraryModule::patch_aarch64(uintptr_t addr, uintptr_t with) {
+void Elf::patch_aarch64(uintptr_t addr, uintptr_t with) {
     uint32_t *hook = reinterpret_cast<uint32_t *>(addr);
     hook[0] = 0x58000051u; // LDR X17, #0x8
     hook[1] = 0xd61f0220u; // BR X17

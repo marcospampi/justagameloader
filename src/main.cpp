@@ -1,18 +1,34 @@
 #include <iostream>
-#include <fmt/format.h>
+#include "types.hpp"
+#include "thread.hpp"
 #include "so_module.h"
-int main(int argc, const char **argv) {
+using VAddr = u64;
+
+int main(int argc, const char **argv, const char **envv) {
+    if ( argc < 2 ) return 1;
+    const auto elf_file = argv[1];
     try {
-        auto lib = SharedLibraryModule("/home/marco/Scrivania/hobby/justagameloader/libs/chocolate-doom/chocolate-doom.aarch64");
+        auto lib = Elf(elf_file);
 
-        if ( const auto sym = lib.get_symbol("malloc")) {
-            std::cout << fmt::format("{:16X} -> {}\n", sym.value(), "malloc");
-        }
-        if ( const auto sym = lib.get_symbol("JNI_OnLoad")) {
-            std::cout << fmt::format("{:16X} -> {}\n", sym.value(), "JNI_OnLoad");
+        for ( const auto &entry: *get_thunks() ) {
+            if ( entry.name ) {
+                lib.hook_symbol( entry.name.value(), entry.address );
+            }
         }
 
-        //std::cout << lib.get_name() << std::endl;
+        lib.hook_symbol ( "__stack_chk_guard", reinterpret_cast<uintptr_t>(&main) );
+        lib.hook_symbol ( "stdout", reinterpret_cast<uintptr_t>(&stderr) );
+        lib.hook_symbol ( "stderr", reinterpret_cast<uintptr_t>(&stderr) );
+
+        auto thread = create_thread(4096*16);
+        auto main_syn = lib.get_symbol("main").value();
+
+        // const char *fake_argv[] = {"./chocolate-doom", "-nosound", "-nosfx", "-nomusic", "-window"};
+        const std::vector<const char*> fake_argv = {
+            "./chocolate-doom", "-nosound"
+        };
+        auto result = thread->jit->VMCall<int>(main_syn, fake_argv.size(), (u64)fake_argv.data());
+     
     }
     catch( std::runtime_error error ) {
         
