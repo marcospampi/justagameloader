@@ -1,6 +1,6 @@
 justagameloader
 ---------------
-That's a heap of hacks I made to have chocolate-doom, aarch64 build, run under Dynarmic by thunking *SDL2* and *standard C* functions.
+That's a heap of hacks [I made to have chocolate-doom](https://www.youtube.com/watch?v=aOVgq8A4aZU), aarch64 build, run under Dynarmic by thunking *SDL2* and *standard C* functions.
 
 I got the game to run early this morning, January the 3rd, there are still things that ain't working, sound's one of them.
 
